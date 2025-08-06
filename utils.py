@@ -193,6 +193,157 @@ def sort_images_by_video(source_dir, root_dir=None):
     print(f"\n🎉 Classement terminé ! {copied_images} images et {copied_labels} labels copiés.")
 
 
+def clean_labels_by_class_ids_silent(dataset_dir, valid_class_ids):
+    """
+    Version silencieuse de clean_labels_by_class_ids pour vérifications internes.
+    
+    Args:
+        dataset_dir (str): Chemin vers le dossier du dataset
+        valid_class_ids (list): Liste des IDs de classes valides
+    
+    Returns:
+        dict: Statistiques de nettoyage
+    """
+    train_dir = os.path.join(dataset_dir, "train")
+    labels_dir = os.path.join(train_dir, "labels")
+    
+    if not os.path.exists(labels_dir):
+        return None
+    
+    valid_ids_str = [str(id) for id in valid_class_ids]
+    
+    stats = {
+        'files_processed': 0,
+        'files_modified': 0,
+        'lines_removed': 0,
+        'lines_kept': 0,
+        'invalid_ids_found': set()
+    }
+    
+    for file_name in os.listdir(labels_dir):
+        if not file_name.endswith('.txt'):
+            continue
+            
+        label_path = os.path.join(labels_dir, file_name)
+        new_lines = []
+        file_modified = False
+        
+        stats['files_processed'] += 1
+        
+        with open(label_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:  # Ligne vide
+                    new_lines.append(line)
+                    continue
+                    
+                parts = line.split()
+                if parts:
+                    class_id = parts[0]
+                    if class_id in valid_ids_str:
+                        new_lines.append(line)
+                        stats['lines_kept'] += 1
+                    else:
+                        file_modified = True
+                        stats['lines_removed'] += 1
+                        stats['invalid_ids_found'].add(class_id)
+        
+        # Réécrire le fichier si modifié
+        if file_modified:
+            with open(label_path, 'w') as f:
+                for line in new_lines:
+                    f.write(line + '\n')
+            stats['files_modified'] += 1
+    
+    return stats
+
+
+def clean_labels_by_class_ids(dataset_dir, valid_class_ids):
+    """
+    Supprime toutes les lignes de labels qui n'ont pas un ID de classe valide.
+    Utile quand les fichiers .txt contiennent des IDs obsolètes.
+    
+    Args:
+        dataset_dir (str): Chemin vers le dossier du dataset (contenant train/images et train/labels)
+        valid_class_ids (list): Liste des IDs de classes valides (ex: [0, 1])
+    
+    Returns:
+        dict: Statistiques de nettoyage
+    """
+    train_dir = os.path.join(dataset_dir, "train")
+    labels_dir = os.path.join(train_dir, "labels")
+    
+    if not os.path.exists(labels_dir):
+        print(f"❌ Le dossier labels '{labels_dir}' n'existe pas.")
+        return None
+    
+    valid_ids_str = [str(id) for id in valid_class_ids]
+    
+    stats = {
+        'files_processed': 0,
+        'files_modified': 0,
+        'lines_removed': 0,
+        'lines_kept': 0,
+        'invalid_ids_found': set()
+    }
+    
+    print(f"🔧 NETTOYAGE DES LABELS PAR ID DE CLASSE")
+    print(f"📂 Dataset: {dataset_dir}")
+    print(f"✅ IDs valides: {valid_class_ids}")
+    print("=" * 50)
+    
+    for file_name in os.listdir(labels_dir):
+        if not file_name.endswith('.txt'):
+            continue
+            
+        label_path = os.path.join(labels_dir, file_name)
+        new_lines = []
+        file_modified = False
+        lines_removed_this_file = 0
+        
+        stats['files_processed'] += 1
+        
+        with open(label_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:  # Ligne vide
+                    new_lines.append(line)
+                    continue
+                    
+                parts = line.split()
+                if parts:
+                    class_id = parts[0]
+                    if class_id in valid_ids_str:
+                        # ID valide, on garde la ligne
+                        new_lines.append(line)
+                        stats['lines_kept'] += 1
+                    else:
+                        # ID invalide, on supprime la ligne
+                        file_modified = True
+                        lines_removed_this_file += 1
+                        stats['lines_removed'] += 1
+                        stats['invalid_ids_found'].add(class_id)
+        
+        # Réécrire le fichier si modifié
+        if file_modified:
+            with open(label_path, 'w') as f:
+                for line in new_lines:
+                    f.write(line + '\n')
+            stats['files_modified'] += 1
+            print(f"🗑️ {file_name}: {lines_removed_this_file} lignes supprimées")
+    
+    print(f"\n✅ NETTOYAGE TERMINÉ:")
+    print(f"   📁 Fichiers traités: {stats['files_processed']}")
+    print(f"   📝 Fichiers modifiés: {stats['files_modified']}")
+    print(f"   🗑️ Lignes supprimées: {stats['lines_removed']}")
+    print(f"   ✅ Lignes conservées: {stats['lines_kept']}")
+    
+    if stats['invalid_ids_found']:
+        print(f"   ❌ IDs invalides trouvés et supprimés: {sorted(stats['invalid_ids_found'])}")
+    
+    return stats
+
+
 def remap_yolo_labels_inplace(dataset_dir, new_class_order):
     """
     Modifie les labels YOLO en place dans un dataset existant et met à jour le fichier data.yaml.
@@ -227,59 +378,169 @@ def remap_yolo_labels_inplace(dataset_dir, new_class_order):
     old_names = yaml_data['names']
     
     # Vérifications
-    if len(old_names) != len(new_class_order):
-        raise ValueError(f"❌ Nombre de classes différent: ancien={len(old_names)}, nouveau={len(new_class_order)}")
+    # Vérifier que toutes les classes dans new_class_order existent dans old_names
+    missing_classes = set(new_class_order) - set(old_names)
+    if missing_classes:
+        raise ValueError(f"❌ Classes introuvables dans le dataset actuel: {missing_classes}")
     
-    if set(old_names) != set(new_class_order):
-        missing_in_new = set(old_names) - set(new_class_order)
-        extra_in_new = set(new_class_order) - set(old_names)
-        error_msg = "❌ Les classes ne correspondent pas:"
-        if missing_in_new:
-            error_msg += f" Manquantes dans le nouvel ordre: {missing_in_new}"
-        if extra_in_new:
-            error_msg += f" En trop dans le nouvel ordre: {extra_in_new}"
-        raise ValueError(error_msg)
+    # Classes qui seront supprimées (présentes dans old_names mais pas dans new_class_order)
+    classes_to_remove = set(old_names) - set(new_class_order)
     
-    # Si l'ordre est déjà correct, pas besoin de modifier
+    if classes_to_remove:
+        print(f"⚠️ ATTENTION: Les classes suivantes seront SUPPRIMÉES du dataset:")
+        for cls in sorted(classes_to_remove):
+            old_idx = old_names.index(cls)
+            print(f"   🗑️ '{cls}' (ID: {old_idx}) sera supprimée")
+        print(f"   📊 Total: {len(classes_to_remove)} classes seront supprimées")
+    
+    # Si l'ordre est déjà correct, on vérifie quand même les fichiers de labels
+    # car il peut y avoir des incohérences entre data.yaml et les fichiers .txt
     if old_names == new_class_order:
-        print("✅ L'ordre des classes est déjà correct, aucune modification nécessaire.")
-        return f"✅ Aucune modification nécessaire : {dataset_dir}"
+        print("✅ L'ordre des classes dans data.yaml est déjà correct.")
+        print("🔍 Vérification des fichiers pour d'éventuelles incohérences...")
+        
+        # Vérifier directement les fichiers - logique intégrée
+        valid_ids_str = [str(i) for i in range(len(new_class_order))]
+        total_removed = 0
+        files_modified = 0
+        
+        for file_name in os.listdir(labels_dir):
+            if not file_name.endswith('.txt'):
+                continue
+                
+            label_path = os.path.join(labels_dir, file_name)
+            new_lines = []
+            file_modified = False
+            
+            with open(label_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:  # Ligne vide
+                        new_lines.append(line)
+                        continue
+                        
+                    parts = line.split()
+                    if parts:
+                        class_id = parts[0]
+                        if class_id in valid_ids_str:
+                            new_lines.append(line)
+                        else:
+                            file_modified = True
+                            total_removed += 1
+            
+            # Réécrire le fichier si modifié
+            if file_modified:
+                with open(label_path, 'w') as f:
+                    for line in new_lines:
+                        f.write(line + '\n')
+                files_modified += 1
+        
+        if total_removed > 0:
+            print(f"⚠️ Incohérence détectée ! {total_removed} lignes avec des IDs invalides supprimées de {files_modified} fichiers.")
+            
+            # Mettre à jour le data.yaml pour être sûr
+            yaml_content = {
+                "nc": len(new_class_order),
+                "names": new_class_order
+            }
+            with open(yaml_path, 'w') as f:
+                yaml.dump(yaml_content, f, default_flow_style=False)
+            
+            return f"✅ Incohérences corrigées dans : {dataset_dir}"
+        else:
+            print("✅ Aucune incohérence détectée, tout est conforme.")
+            return f"✅ Aucune modification nécessaire : {dataset_dir}"
     
-    print(f"🔄 Changement d'ordre: {old_names} → {new_class_order}")
+    print(f"🔄 Changement: {old_names} → {new_class_order}")
+    if len(new_class_order) < len(old_names):
+        print(f"📉 Réduction du nombre de classes: {len(old_names)} → {len(new_class_order)}")
     
-    # Mapping des classes
+    # Mapping des classes - seulement pour les classes conservées
     remap_dict = {}
     for i, name in enumerate(old_names):
-        remap_dict[str(i)] = str(new_class_order.index(name))
+        if name in new_class_order:
+            # Cette classe sera conservée et remappée
+            remap_dict[str(i)] = str(new_class_order.index(name))
+        else:
+            # Cette classe sera supprimée
+            remap_dict[str(i)] = None  # Marquée pour suppression
 
-    modified_count = 0
+    # Premier passage : identifier toutes les classes présentes dans les fichiers
+    print("🔍 Analyse des fichiers labels pour détecter les classes présentes...")
+    all_classes_found = set()
     
     for file_name in os.listdir(labels_dir):
         if not file_name.endswith('.txt'):
             continue
 
         label_path = os.path.join(labels_dir, file_name)
-        new_lines = []
-        file_modified = False
-
         with open(label_path, 'r') as f:
             for line in f:
                 parts = line.strip().split()
                 if parts:
-                    old_class = parts[0]
-                    if old_class in remap_dict and remap_dict[old_class] is not None:
-                        if parts[0] != remap_dict[old_class]:
-                            file_modified = True
-                        parts[0] = remap_dict[old_class]
-                        new_lines.append(' '.join(parts))
+                    all_classes_found.add(parts[0])
+    
+    # Identifier les classes qui seront supprimées
+    valid_ids = [str(i) for i in range(len(new_class_order))]
+    classes_to_remove = all_classes_found - set(valid_ids)
+    
+    if classes_to_remove:
+        print(f"🗑️ ATTENTION: Les IDs de classes suivants seront SUPPRIMÉS des fichiers:")
+        for class_id in sorted(classes_to_remove):
+            print(f"   ❌ ID '{class_id}' sera supprimé")
+        print(f"   📊 Total: {len(classes_to_remove)} IDs de classes seront supprimés\n")
+    else:
+        print("✅ Tous les IDs de classes dans les fichiers sont valides\n")
+    
+    # Deuxième passage : traitement avec nettoyage complet
+    print("🔧 Application du remapping et nettoyage des IDs invalides...")
+    
+    modified_count = 0
+    
+    # Traitement du remapping si nécessaire
+    if old_names != new_class_order:
+        for file_name in os.listdir(labels_dir):
+            if not file_name.endswith('.txt'):
+                continue
 
-        # Réécrit le fichier seulement s'il y a eu des modifications
-        if file_modified:
-            with open(label_path, 'w') as f:
-                for line in new_lines:
-                    f.write(line + '\n')
-            modified_count += 1
-            print(f"✅ Modifié : {file_name}")
+            label_path = os.path.join(labels_dir, file_name)
+            new_lines = []
+            file_modified = False
+
+            with open(label_path, 'r') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if parts:
+                        old_class = parts[0]
+                        if old_class in remap_dict and remap_dict[old_class] is not None:
+                            if parts[0] != remap_dict[old_class]:
+                                file_modified = True
+                            parts[0] = remap_dict[old_class]
+                            new_lines.append(' '.join(parts))
+                        # Les autres lignes sont ignorées (supprimées)
+                    else:
+                        # Ligne vide - on la conserve
+                        new_lines.append(line.strip())
+
+            # Réécrit le fichier seulement s'il y a eu des modifications
+            if file_modified:
+                with open(label_path, 'w') as f:
+                    for line in new_lines:
+                        f.write(line + '\n')
+                modified_count += 1
+                print(f"✅ Modifié : {file_name}")
+    
+    # Nettoyage final pour s'assurer qu'il ne reste aucun ID invalide
+    valid_class_ids = list(range(len(new_class_order)))
+    final_clean_stats = clean_labels_by_class_ids_silent(dataset_dir, valid_class_ids)
+    
+    if final_clean_stats and final_clean_stats['lines_removed'] > 0:
+        print(f"🗑️ Nettoyage final: {final_clean_stats['lines_removed']} lignes supplémentaires supprimées")
+        print(f"   📁 {final_clean_stats['files_modified']} fichiers modifiés lors du nettoyage final")
+        if final_clean_stats['invalid_ids_found']:
+            print(f"   ❌ IDs supprimés: {sorted(final_clean_stats['invalid_ids_found'])}")
+    else:
+        print("✅ Aucun nettoyage supplémentaire nécessaire")
 
     # Met à jour le fichier data.yaml
     yaml_content = {
@@ -410,25 +671,29 @@ def remove_images_without_labels(dataset_path):
     return stats
 
 
-def create_data_yaml(dataset_path, output_path=None):
+def create_data_yaml(dataset_path, class_names, output_path=None):
     """
     Crée un fichier data.yaml pour YOLOv8/YOLO training.
     
     Args:
         dataset_path (str): Chemin vers le dataset final (contenant train/, val/, test/)
         output_path (str, optional): Chemin où créer le data.yaml. Si None, créé dans dataset_path
+        class_names (list, optional): Liste des noms de classes. Si None, utilise les classes par défaut
     
     Returns:
         str: Chemin vers le fichier data.yaml créé
     """
+    if not os.path.exists(dataset_path):
+        print(f"❌ Le chemin du dataset '{dataset_path}' n'existe pas.")
+        return None
+    if not class_names or not isinstance(class_names, list):
+        print("❌ La liste des noms de classes doit être fournie et être une liste non vide.")
+        return None
     # Définir le chemin de sortie
     if output_path is None:
         yaml_path = os.path.join(dataset_path, 'data.yaml')
     else:
         yaml_path = output_path
-    
-    # Définir les classes pour Spikeball/Roundnet
-    class_names = ['Spikeball', 'Net', 'Person with Ball']
     
     # Créer les chemins relatifs ou absolus
     train_path = os.path.join(dataset_path, 'train')
